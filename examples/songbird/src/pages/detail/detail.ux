@@ -1,0 +1,197 @@
+<template>
+  <div class="page">
+    <div class="header">
+      <text class="back-btn" onclick="goBack">&lt;</text>
+      <div class="title-area">
+        <text class="song-name">{{ title }}</text>
+        <div class="title-underline" style="background-color: {{ color }};"></div>
+      </div>
+    </div>
+    <list class="lyrics-list">
+      <list-item for="{{lines}}" class="lyrics-item-{{ $item.type }}" type="{{ $item.type }}">
+        <text class="lyrics-line {{ $item.cls }}">{{ $item.text }}</text>
+      </list-item>
+    </list>
+    <div class="footer">
+      <text class="footer-dot" style="color: {{ color }};">- - -</text>
+    </div>
+  </div>
+</template>
+
+<script>
+import router from "@system.router"
+import songs from "../../common/songs"
+
+var colors = [
+  "#e57373", "#f06292", "#ba68c8", "#9575cd",
+  "#7986cb", "#64b5f6", "#4fc3f7", "#4dd0e1",
+  "#4db6ac", "#81c784", "#aed581", "#dce775",
+  "#fff176", "#ffd54f", "#ffb74d", "#ff8a65",
+  "#a1887f", "#e0e0e0", "#90a4ae", "#80cbc4"
+]
+
+var FONT_SIZE = 20
+var USABLE_WIDTH = 172
+var MAX_CHARS = Math.floor(USABLE_WIDTH / (FONT_SIZE * 0.65))
+
+function rev(text) {
+  return text.split("").reverse().join("")
+}
+
+function wrapText(text, maxChars) {
+  if (text.length <= maxChars) return [text]
+  var original = rev(text)
+  var words = original.split(" ")
+  var parts = []
+  var current = ""
+  for (var w = 0; w < words.length; w++) {
+    var word = words[w]
+    if (current === "") {
+      current = word
+    } else if ((current + " " + word).length <= maxChars) {
+      current = current + " " + word
+    } else {
+      parts.push(rev(current))
+      current = word
+    }
+  }
+  if (current !== "") parts.push(rev(current))
+  return parts
+}
+
+export default {
+  private: {
+    title: "",
+    color: "#4fc3f7",
+    lines: []
+  },
+
+  goBack() {
+    router.back()
+  },
+
+  onInit() {
+    var songId = this.songId
+    for (var i = 0; i < songs.length; i++) {
+      if (songs[i].id === parseInt(songId)) {
+        this.title = songs[i].title
+        this.color = colors[i % colors.length]
+        var raw = songs[i].lyrics.split("\n")
+        var result = []
+        var verseNum = 0
+        for (var j = 0; j < raw.length; j++) {
+          var isBlank = raw[j] === ""
+          if (isBlank) {
+            verseNum++
+            result.push({ text: " ", cls: "blank", type: "blank" })
+          } else {
+            var cls = verseNum % 2 === 0 ? "verse-a" : "verse-b"
+            var wrapped = wrapText(raw[j], MAX_CHARS)
+            for (var k = 0; k < wrapped.length; k++) {
+              result.push({ text: wrapped[k], cls: cls, type: "line" })
+            }
+          }
+        }
+        this.lines = result
+        break
+      }
+    }
+  }
+}
+</script>
+
+<style>
+.page {
+  flex-direction: column;
+  background-color: #0a0a14;
+}
+
+.header {
+  flex-direction: row;
+  align-items: center;
+  padding-top: 8px;
+  padding-bottom: 2px;
+  padding-left: 6px;
+  padding-right: 6px;
+}
+
+.back-btn {
+  font-size: 16px;
+  color: #e0e0e0;
+  width: 16px;
+  font-weight: bold;
+}
+
+.title-area {
+  flex-direction: column;
+  flex: 1;
+  align-items: center;
+  padding-right: 16px;
+}
+
+.song-name {
+  font-size: 18px;
+  color: #ffffff;
+  text-align: center;
+  font-weight: bold;
+}
+
+.title-underline {
+  width: 40px;
+  height: 2px;
+  border-radius: 1px;
+  margin-top: 2px;
+  margin-bottom: 2px;
+}
+
+.lyrics-list {
+  flex: 1;
+  width: 100%;
+}
+
+.lyrics-item-line {
+  height: 26px;
+  padding-left: 10px;
+  padding-right: 10px;
+  justify-content: center;
+}
+
+.lyrics-item-blank {
+  height: 10px;
+}
+
+.verse-a {
+  font-size: 20px;
+  font-weight: bold;
+  color: #e0e0e0;
+  text-align: right;
+}
+
+.verse-b {
+  font-size: 20px;
+  font-weight: bold;
+  color: #b0bec5;
+  text-align: right;
+}
+
+.blank {
+  font-size: 6px;
+  color: #0a0a14;
+}
+
+.lyrics-line {
+  font-size: 20px;
+}
+
+.footer {
+  justify-content: center;
+  align-items: center;
+  padding-top: 4px;
+  padding-bottom: 8px;
+}
+
+.footer-dot {
+  font-size: 10px;
+  text-align: center;
+}
+</style>
