@@ -231,8 +231,17 @@ UI_REMOTE="/sdcard/ui_tmp.xml"
 UI_LOCAL="/tmp/xiaomi_band_ui_${PHONE_SERIAL//[^[:alnum:]]/_}.xml"
 
 dump_ui() {
-    $ADB shell uiautomator dump "$UI_REMOTE" >/dev/null 2>&1 || return 1
-    $ADB exec-out cat "$UI_REMOTE" > "$UI_LOCAL" 2>/dev/null
+    local ATTEMPTS="${1:-3}"
+    local I
+    for ((I=0; I<ATTEMPTS; I++)); do
+        if $ADB shell uiautomator dump "$UI_REMOTE" >/dev/null 2>&1 \
+            && $ADB exec-out cat "$UI_REMOTE" > "$UI_LOCAL" 2>/dev/null \
+            && grep -q '<hierarchy' "$UI_LOCAL"; then
+            return 0
+        fi
+        sleep 1
+    done
+    return 1
 }
 
 ui_value_by_id() {
@@ -270,6 +279,75 @@ if m:
 PY
 }
 
+ui_center_by_bounds() {
+    local BOUNDS="$1"
+    python3 - "$BOUNDS" <<'PY'
+import re
+import sys
+
+m = re.fullmatch(r"\[(\d+),(\d+)\]\[(\d+),(\d+)\]", sys.argv[1])
+if m:
+    x1, y1, x2, y2 = map(int, m.groups())
+    print((x1 + x2) // 2, (y1 + y2) // 2)
+PY
+}
+
+ui_first_edit_text() {
+    python3 - "$UI_LOCAL" <<'PY'
+import sys
+import xml.etree.ElementTree as ET
+
+try:
+    root = ET.parse(sys.argv[1]).getroot()
+except (ET.ParseError, OSError):
+    raise SystemExit(0)
+
+for node in root.iter("node"):
+    if "EditText" in node.attrib.get("class", ""):
+        print("{}\t{}".format(
+            node.attrib.get("resource-id", ""),
+            node.attrib.get("bounds", "")
+        ))
+        break
+PY
+}
+
+ui_first_edit_text_value() {
+    python3 - "$UI_LOCAL" <<'PY'
+import sys
+import xml.etree.ElementTree as ET
+
+try:
+    root = ET.parse(sys.argv[1]).getroot()
+except (ET.ParseError, OSError):
+    raise SystemExit(0)
+
+for node in root.iter("node"):
+    if "EditText" in node.attrib.get("class", ""):
+        print(node.attrib.get("text", ""))
+        break
+PY
+}
+
+ui_has_text() {
+    local EXPECTED="$1"
+    python3 - "$UI_LOCAL" "$EXPECTED" <<'PY'
+import sys
+import xml.etree.ElementTree as ET
+
+try:
+    root = ET.parse(sys.argv[1]).getroot()
+except (ET.ParseError, OSError):
+    raise SystemExit(1)
+
+expected = sys.argv[2]
+for node in root.iter("node"):
+    if expected in (node.attrib.get("text", ""), node.attrib.get("content-desc", "")):
+        raise SystemExit(0)
+raise SystemExit(1)
+PY
+}
+
 wait_for_id() {
     local RESOURCE_ID="$1"
     local ATTEMPTS="${2:-10}"
@@ -277,6 +355,37 @@ wait_for_id() {
     for ((I=0; I<ATTEMPTS; I++)); do
         if dump_ui && [ -n "$(ui_value_by_id "$RESOURCE_ID" bounds)" ]; then
             return 0
+        fi
+        sleep 1
+    done
+    return 1
+}
+
+wait_for_package_input() {
+    local ATTEMPTS="${1:-10}"
+    local I
+    local EDIT_FIELD
+    local FIELD_ID
+    local FIELD_BOUNDS
+
+    PACKAGE_INPUT_ID=""
+    PACKAGE_INPUT_BOUNDS=""
+
+    for ((I=0; I<ATTEMPTS; I++)); do
+        if dump_ui 3; then
+            PACKAGE_INPUT_BOUNDS=$(ui_value_by_id "com.xiaomi.wearable:id/pkgNameView" bounds)
+            if [ -n "$PACKAGE_INPUT_BOUNDS" ]; then
+                PACKAGE_INPUT_ID="com.xiaomi.wearable:id/pkgNameView"
+                return 0
+            fi
+
+            EDIT_FIELD=$(ui_first_edit_text)
+            if [ -n "$EDIT_FIELD" ]; then
+                IFS=$'\t' read -r FIELD_ID FIELD_BOUNDS <<< "$EDIT_FIELD"
+                PACKAGE_INPUT_ID="$FIELD_ID"
+                PACKAGE_INPUT_BOUNDS="$FIELD_BOUNDS"
+                [ -n "$PACKAGE_INPUT_BOUNDS" ] && return 0
+            fi
         fi
         sleep 1
     done
@@ -292,7 +401,22 @@ tap_id() {
     $ADB shell input tap $COORDS
 }
 
+wait_for_user() {
+    local MESSAGE="$1"
+    local ACK
+    if [ ! -t 0 ]; then
+        echo "ERROR: Manual confirmation is required, but standard input is not interactive."
+        return 1
+    fi
+    read -r -p "$MESSAGE" ACK
+}
+
 enter_package_name() {
+    local MANUAL_DIALOG=false
+    local INPUT_COORDS
+    local ENTERED=""
+    local CONFIRMED=""
+
     echo "==> Entering package name..."
     if ! wait_for_id "com.xiaomi.wearable:id/inputPackageName" 10; then
         echo "ERROR: Third App Support page is not visible."
@@ -301,34 +425,63 @@ enter_package_name() {
     fi
     tap_id "com.xiaomi.wearable:id/inputPackageName"
 
-    if ! wait_for_id "com.xiaomi.wearable:id/pkgNameView" 10; then
-        echo "ERROR: Package-name dialog did not open."
-        exit 1
+    if wait_for_package_input 5; then
+        if [ -n "$PACKAGE_INPUT_ID" ]; then
+            tap_id "$PACKAGE_INPUT_ID"
+        else
+            INPUT_COORDS=$(ui_center_by_bounds "$PACKAGE_INPUT_BOUNDS")
+            if [ -z "$INPUT_COORDS" ]; then
+                MANUAL_DIALOG=true
+            else
+                $ADB shell input tap $INPUT_COORDS
+            fi
+        fi
+    else
+        MANUAL_DIALOG=true
     fi
-    tap_id "com.xiaomi.wearable:id/pkgNameView"
+
+    # Some Mi Fitness versions draw this dialog in a window that uiautomator
+    # cannot inspect. The field is nevertheless focused when the dialog opens,
+    # so typing through ADB still works. The user confirms the visible dialog.
     $ADB shell input text "$PKG_NAME"
     sleep 1
 
-    dump_ui
-    local ENTERED
-    ENTERED=$(ui_value_by_id "com.xiaomi.wearable:id/pkgNameView" text)
-    if [ "$ENTERED" != "$PKG_NAME" ]; then
-        echo "ERROR: Package name was entered incorrectly."
-        echo "  Expected: $PKG_NAME"
-        echo "  Actual:   $ENTERED"
-        exit 1
+    if [ "$MANUAL_DIALOG" = false ] && dump_ui 3; then
+        if [ -n "$PACKAGE_INPUT_ID" ]; then
+            ENTERED=$(ui_value_by_id "$PACKAGE_INPUT_ID" text)
+        else
+            ENTERED=$(ui_first_edit_text_value)
+        fi
+        if [ -n "$ENTERED" ] && [ "$ENTERED" != "$PKG_NAME" ]; then
+            echo "WARN: Mi Fitness reports a different package name."
+            echo "  Expected: $PKG_NAME"
+            echo "  Actual:   $ENTERED"
+            MANUAL_DIALOG=true
+        fi
     fi
 
-    tap_id "android:id/button1"
-    sleep 2
-    dump_ui
-    local CONFIRMED
-    CONFIRMED=$(ui_value_by_id "com.xiaomi.wearable:id/showPackageName" text)
-    if [ "$CONFIRMED" != "$PKG_NAME" ]; then
-        echo "ERROR: Mi Fitness did not confirm the package name."
-        exit 1
+    if [ "$MANUAL_DIALOG" = true ]; then
+        echo "    Mi Fitness opened the dialog, but Android hides its UI tree."
+        echo "    Ensure the field contains: $PKG_NAME"
+        echo "    Tap the dialog's confirmation button on the phone."
+        wait_for_user "    Press Enter here after confirming it on the phone... "
+    elif ! tap_id "android:id/button1"; then
+        echo "    The package field was filled, but the confirmation button is hidden from automation."
+        echo "    Tap the dialog's confirmation button on the phone."
+        wait_for_user "    Press Enter here after confirming it on the phone... "
     fi
-    echo "    Package name confirmed"
+
+    sleep 2
+    if dump_ui 5; then
+        CONFIRMED=$(ui_value_by_id "com.xiaomi.wearable:id/showPackageName" text)
+        if [ "$CONFIRMED" != "$PKG_NAME" ] && ! ui_has_text "$PKG_NAME"; then
+            echo "WARN: Mi Fitness does not expose the confirmed package name."
+            echo "      Verify on the phone that it shows: $PKG_NAME"
+        fi
+    else
+        echo "WARN: The package name cannot be verified through Android UI automation."
+    fi
+    echo "    Package-name step complete"
 }
 
 enter_package_name
@@ -344,8 +497,9 @@ fi
 
 echo "==> Tapping 'install third app'..."
 if ! tap_id "com.xiaomi.wearable:id/installThirdApp"; then
-    echo "ERROR: Install button not found"
-    exit 1
+    echo "    The install button is hidden from Android UI automation."
+    echo "    Tap 'Install third app' on the phone."
+    wait_for_user "    Press Enter here after the Android file picker opens... "
 fi
 sleep 3
 
