@@ -20,7 +20,7 @@
 
 <script>
 import router from "@system.router"
-import songs from "../../common/songs"
+import jokes from "../../common/jokes"
 
 var colors = [
   "#e57373", "#f06292", "#ba68c8", "#9575cd",
@@ -34,14 +34,9 @@ var FONT_SIZE = 20
 var USABLE_WIDTH = 172
 var MAX_CHARS = Math.floor(USABLE_WIDTH / (FONT_SIZE * 0.65))
 
-function rev(text) {
-  return text.split("").reverse().join("")
-}
-
 function wrapText(text, maxChars) {
   if (text.length <= maxChars) return [text]
-  var original = rev(text)
-  var words = original.split(" ")
+  var words = text.split(" ")
   var parts = []
   var current = ""
   for (var w = 0; w < words.length; w++) {
@@ -51,11 +46,11 @@ function wrapText(text, maxChars) {
     } else if ((current + " " + word).length <= maxChars) {
       current = current + " " + word
     } else {
-      parts.push(rev(current))
+      parts.push(current)
       current = word
     }
   }
-  if (current !== "") parts.push(rev(current))
+  if (current !== "") parts.push(current)
   return parts
 }
 
@@ -71,12 +66,12 @@ export default {
   },
 
   onInit() {
-    var songId = this.songId
-    for (var i = 0; i < songs.length; i++) {
-      if (songs[i].id === parseInt(songId)) {
-        this.title = songs[i].title
+    var jokeId = this.jokeId
+    for (var i = 0; i < jokes.length; i++) {
+      if (jokes[i].id === parseInt(jokeId)) {
+        this.title = jokes[i].title
         this.color = colors[i % colors.length]
-        var raw = songs[i].lyrics.split("\n")
+        var raw = jokes[i].lyrics.split("\n")
         var result = []
         var verseNum = 0
         for (var j = 0; j < raw.length; j++) {
@@ -164,14 +159,14 @@ export default {
   font-size: 20px;
   font-weight: bold;
   color: #e0e0e0;
-  text-align: right;
+  text-align: left;
 }
 
 .verse-b {
   font-size: 20px;
   font-weight: bold;
   color: #b0bec5;
-  text-align: right;
+  text-align: left;
 }
 
 .blank {

@@ -1,7 +1,7 @@
 {
-  "name": "Songbird",
+  "name": "joke-book",
   "version": "1.0.0",
-  "description": "",
+  "description": "A small English joke book for Xiaomi Vela wearables",
   "engines": {
     "node": ">=8.10"
   },

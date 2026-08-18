@@ -1,12 +1,12 @@
 <template>
   <div class="page">
     <div class="header-area">
-      <text class="moon">*</text>
-      <text class="header">Songbook</text>
-      <text class="moon">*</text>
+      <text class="moon">?</text>
+      <text class="header">Joke Book</text>
+      <text class="moon">?</text>
     </div>
     <list class="song-list">
-      <list-item for="{{songs}}" class="song-item" type="song" onclick="openSong($item.id)">
+      <list-item for="{{jokes}}" class="song-item" type="joke" onclick="openJoke($item.id)">
         <div class="song-row">
           <div class="color-bar" style="background-color: {{ $item.color }};"></div>
           <div class="song-content">
@@ -21,7 +21,7 @@
 
 <script>
 import router from "@system.router"
-import songs from "../../common/songs"
+import jokes from "../../common/jokes"
 
 var colors = [
   "#e57373", "#f06292", "#ba68c8", "#9575cd",
@@ -33,26 +33,26 @@ var colors = [
 
 export default {
   private: {
-    songs: songs.map(function (s, i) {
-      var lineCount = s.lyrics.split("\n").length
+    jokes: jokes.map(function (joke, i) {
+      var lineCount = joke.lyrics.split("\n").length
       var dots = ""
       for (var d = 0; d < Math.min(lineCount, 12); d++) {
         dots += "."
       }
       return {
-        id: s.id,
-        title: s.title,
+        id: joke.id,
+        title: joke.title,
         color: colors[i % colors.length],
         dots: dots
       }
     })
   },
 
-  openSong(id) {
+  openJoke(id) {
     router.push({
       uri: "/pages/detail",
       params: {
-        songId: id
+        jokeId: id
       }
     })
   }

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# deploy.sh - Build and deploy a Vela Quick App RPK to Xiaomi Mi Band 8 Pro
+# deploy.sh - Build and deploy a Vela Quick App RPK to a Xiaomi wearable
 #
 # Deploys via the hidden "Third App Support" debug page in Mi Fitness.
 # Requires: ADB, Android SDK (javac + d8), phone paired with band.
@@ -17,7 +17,8 @@
 #
 # Environment variables:
 #   PHONE_SERIAL          Phone ADB serial (overridden by --serial)
-#   ANDROID_HOME          Android SDK path (default: ~/Library/Android/sdk)
+#   ANDROID_HOME          Android SDK path (also accepts ANDROID_SDK_ROOT)
+#   PICKER_WAIT_SECONDS   Seconds to wait for RPK selection (default: 180)
 #
 set -euo pipefail
 
@@ -26,9 +27,10 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 # --- Defaults ---
 PHONE_SERIAL="${PHONE_SERIAL:-}"
 PROJECT_DIR=""
-ANDROID_HOME="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-$HOME/Library/Android/sdk}}"
+ANDROID_HOME="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-}}"
 DO_BUILD=true
 DO_UNINSTALL=false
+PICKER_WAIT_SECONDS="${PICKER_WAIT_SECONDS:-180}"
 
 # --- Parse arguments ---
 while [[ $# -gt 0 ]]; do
@@ -52,6 +54,17 @@ if [ -z "$PROJECT_DIR" ]; then
     echo "ERROR: --project <dir> is required"
     echo "Run with --help for usage"
     exit 1
+fi
+
+# --- Locate the Android SDK when the caller did not set an environment variable ---
+if [ -z "$ANDROID_HOME" ]; then
+    HOME_DIR="${HOME:?HOME is required to locate the Android SDK}"
+    for CANDIDATE in "$HOME_DIR/Android/Sdk" "$HOME_DIR/Library/Android/sdk"; do
+        if [ -d "$CANDIDATE" ]; then
+            ANDROID_HOME="$CANDIDATE"
+            break
+        fi
+    done
 fi
 
 PROJECT_DIR="$(cd "$PROJECT_DIR" && pwd)"
@@ -79,6 +92,10 @@ fi
 ADB="adb -s ${PHONE_SERIAL}"
 
 # --- Auto-detect Android SDK tools ---
+if [ -z "$ANDROID_HOME" ]; then
+    echo "ERROR: Android SDK path not found. Set ANDROID_HOME or ANDROID_SDK_ROOT."
+    exit 1
+fi
 if [ ! -d "$ANDROID_HOME" ]; then
     echo "ERROR: Android SDK not found at $ANDROID_HOME"
     echo "Set ANDROID_HOME to your SDK path"
@@ -210,99 +227,180 @@ echo "    Debug page launched"
 # --- Step 5: Automate UI interaction ---
 sleep 4
 
-enter_package_name() {
-    echo "==> Entering package name..."
-    $ADB shell uiautomator dump /sdcard/ui_tmp.xml 2>/dev/null
-    local COORDS=$($ADB pull /sdcard/ui_tmp.xml /tmp/ui_tmp.xml 2>/dev/null; python3 -c "
-import sys, re
-xml = open('/tmp/ui_tmp.xml').read()
-m = re.search(r'text=\"click to input package name\".*?bounds=\"\[(\d+),(\d+)\]\[(\d+),(\d+)\]\"', xml)
-if m: print(f'{(int(m.group(1))+int(m.group(3)))//2} {(int(m.group(2))+int(m.group(4)))//2}')
-" 2>/dev/null)
+UI_REMOTE="/sdcard/ui_tmp.xml"
+UI_LOCAL="/tmp/xiaomi_band_ui_${PHONE_SERIAL//[^[:alnum:]]/_}.xml"
 
-    if [ -n "$COORDS" ]; then
-        $ADB shell input tap $COORDS
-    else
-        echo "    WARN: Could not find 'click to input package name' button"
-        $ADB shell input tap 720 689
-    fi
-    sleep 1.5
-
-    # Find and tap the EditText in the dialog
-    $ADB shell uiautomator dump /sdcard/ui_tmp.xml 2>/dev/null
-    COORDS=$($ADB pull /sdcard/ui_tmp.xml /tmp/ui_tmp.xml 2>/dev/null; python3 -c "
-import sys, re
-xml = open('/tmp/ui_tmp.xml').read()
-m = re.search(r'class=\"android.widget.EditText\".*?bounds=\"\[(\d+),(\d+)\]\[(\d+),(\d+)\]\"', xml)
-if m: print(f'{(int(m.group(1))+int(m.group(3)))//2} {(int(m.group(2))+int(m.group(4)))//2}')
-" 2>/dev/null)
-
-    if [ -n "$COORDS" ]; then
-        $ADB shell input tap $COORDS
-    fi
-    sleep 0.5
-
-    # Type package name: keyboard adds space after first dot only
-    local FIRST_PART="${PKG_NAME%%.*}"
-    local REST="${PKG_NAME#*.}"
-    $ADB shell input text "$FIRST_PART"
-    sleep 0.2
-    $ADB shell input keyevent 56  # dot
-    sleep 0.3
-    $ADB shell input keyevent 67  # delete auto-space
-    sleep 0.1
-    $ADB shell "input text '$REST'"
-    sleep 0.3
-
-    # Tap OK button
-    sleep 0.3
-    $ADB shell uiautomator dump /sdcard/ui_tmp.xml 2>/dev/null
-    COORDS=$($ADB pull /sdcard/ui_tmp.xml /tmp/ui_tmp.xml 2>/dev/null; python3 -c "
-import re
-xml = open('/tmp/ui_tmp.xml').read()
-m = re.search(r'text=\"OK\".*?bounds=\"\[(\d+),(\d+)\]\[(\d+),(\d+)\]\"', xml)
-if m: print(f'{(int(m.group(1))+int(m.group(3)))//2} {(int(m.group(2))+int(m.group(4)))//2}')
-" 2>/dev/null)
-    if [ -n "$COORDS" ]; then
-        $ADB shell input tap $COORDS
-    else
-        $ADB shell input tap 1023 1577
-    fi
-    sleep 1.5
+dump_ui() {
+    $ADB shell uiautomator dump "$UI_REMOTE" >/dev/null 2>&1 || return 1
+    $ADB exec-out cat "$UI_REMOTE" > "$UI_LOCAL" 2>/dev/null
 }
 
-tap_button() {
-    local BUTTON_TEXT="$1"
-    $ADB shell uiautomator dump /sdcard/ui_tmp.xml 2>/dev/null
-    local COORDS=$($ADB pull /sdcard/ui_tmp.xml /tmp/ui_tmp.xml 2>/dev/null; python3 -c "
-import sys, re
-xml = open('/tmp/ui_tmp.xml').read()
-m = re.search(r'text=\"$BUTTON_TEXT\".*?bounds=\"\[(\d+),(\d+)\]\[(\d+),(\d+)\]\"', xml)
-if m: print(f'{(int(m.group(1))+int(m.group(3)))//2} {(int(m.group(2))+int(m.group(4)))//2}')
-" 2>/dev/null)
+ui_value_by_id() {
+    local RESOURCE_ID="$1"
+    local VALUE_NAME="$2"
+    python3 - "$UI_LOCAL" "$RESOURCE_ID" "$VALUE_NAME" <<'PY'
+import sys
+import xml.etree.ElementTree as ET
 
-    if [ -n "$COORDS" ]; then
-        $ADB shell input tap $COORDS
-        return 0
-    fi
+path, resource_id, value_name = sys.argv[1:]
+try:
+    root = ET.parse(path).getroot()
+except (ET.ParseError, OSError):
+    raise SystemExit(0)
+
+for node in root.iter("node"):
+    if node.attrib.get("resource-id") == resource_id:
+        print(node.attrib.get(value_name, ""))
+        break
+PY
+}
+
+ui_center_by_id() {
+    local RESOURCE_ID="$1"
+    local BOUNDS
+    BOUNDS=$(ui_value_by_id "$RESOURCE_ID" bounds)
+    python3 - "$BOUNDS" <<'PY'
+import re
+import sys
+
+m = re.fullmatch(r"\[(\d+),(\d+)\]\[(\d+),(\d+)\]", sys.argv[1])
+if m:
+    x1, y1, x2, y2 = map(int, m.groups())
+    print((x1 + x2) // 2, (y1 + y2) // 2)
+PY
+}
+
+wait_for_id() {
+    local RESOURCE_ID="$1"
+    local ATTEMPTS="${2:-10}"
+    local I
+    for ((I=0; I<ATTEMPTS; I++)); do
+        if dump_ui && [ -n "$(ui_value_by_id "$RESOURCE_ID" bounds)" ]; then
+            return 0
+        fi
+        sleep 1
+    done
     return 1
+}
+
+tap_id() {
+    local RESOURCE_ID="$1"
+    local COORDS
+    dump_ui || return 1
+    COORDS=$(ui_center_by_id "$RESOURCE_ID")
+    [ -n "$COORDS" ] || return 1
+    $ADB shell input tap $COORDS
+}
+
+enter_package_name() {
+    echo "==> Entering package name..."
+    if ! wait_for_id "com.xiaomi.wearable:id/inputPackageName" 10; then
+        echo "ERROR: Third App Support page is not visible."
+        echo "Close the current Mi Fitness detail page and run the command again."
+        exit 1
+    fi
+    tap_id "com.xiaomi.wearable:id/inputPackageName"
+
+    if ! wait_for_id "com.xiaomi.wearable:id/pkgNameView" 10; then
+        echo "ERROR: Package-name dialog did not open."
+        exit 1
+    fi
+    tap_id "com.xiaomi.wearable:id/pkgNameView"
+    $ADB shell input text "$PKG_NAME"
+    sleep 1
+
+    dump_ui
+    local ENTERED
+    ENTERED=$(ui_value_by_id "com.xiaomi.wearable:id/pkgNameView" text)
+    if [ "$ENTERED" != "$PKG_NAME" ]; then
+        echo "ERROR: Package name was entered incorrectly."
+        echo "  Expected: $PKG_NAME"
+        echo "  Actual:   $ENTERED"
+        exit 1
+    fi
+
+    tap_id "android:id/button1"
+    sleep 2
+    dump_ui
+    local CONFIRMED
+    CONFIRMED=$(ui_value_by_id "com.xiaomi.wearable:id/showPackageName" text)
+    if [ "$CONFIRMED" != "$PKG_NAME" ]; then
+        echo "ERROR: Mi Fitness did not confirm the package name."
+        exit 1
+    fi
+    echo "    Package name confirmed"
 }
 
 enter_package_name
 
 if [ "$DO_UNINSTALL" = true ]; then
     echo "==> Uninstalling old version..."
-    tap_button "uninstall third app"
+    if ! tap_id "com.xiaomi.wearable:id/unInstallThirdApp"; then
+        echo "ERROR: Uninstall button not found"
+        exit 1
+    fi
     sleep 5
 fi
 
 echo "==> Tapping 'install third app'..."
-tap_button "install third app"
-sleep 2
+if ! tap_id "com.xiaomi.wearable:id/installThirdApp"; then
+    echo "ERROR: Install button not found"
+    exit 1
+fi
+sleep 3
+
+ACTIVITIES=$($ADB shell dumpsys activity activities)
+if [[ "$ACTIVITIES" != *com.google.android.documentsui* ]]; then
+    echo "ERROR: Android file picker did not open."
+    exit 1
+fi
 
 echo ""
-echo "==> File picker is now open on your phone."
-echo "    Please select the RPK file: $RPK_FILENAME"
+echo "==> File picker opened successfully."
+echo "    Select Xiaomi-band/$RPK_FILENAME on the phone."
 echo ""
-echo "    Waiting for you to select the file..."
-echo "    (The app will be pushed to your band automatically after selection)"
+echo "    Waiting up to ${PICKER_WAIT_SECONDS}s for the selection..."
+
+ELAPSED=0
+while [ "$ELAPSED" -lt "$PICKER_WAIT_SECONDS" ]; do
+    ACTIVITIES=$($ADB shell dumpsys activity activities)
+    if [[ "$ACTIVITIES" != *topResumedActivity=*com.google.android.documentsui* ]]; then
+        break
+    fi
+    sleep 2
+    ELAPSED=$((ELAPSED + 2))
+done
+
+if [ "$ELAPSED" -ge "$PICKER_WAIT_SECONDS" ]; then
+    echo "WARN: Timed out waiting for RPK selection."
+    exit 2
+fi
+
+echo "==> File returned to Mi Fitness; waiting for band result..."
+# Give onActivityResult/prepareInstall time to read the content URI and update
+# the result label. On HyperOS this took about three seconds in testing.
+sleep 5
+STATUS=""
+for ((I=0; I<30; I++)); do
+    if dump_ui; then
+        STATUS=$(ui_value_by_id "com.xiaomi.wearable:id/thirdappstatus" text)
+        [ -n "$STATUS" ] && break
+    fi
+    sleep 1
+done
+
+case "$STATUS" in
+    "发送文件成功")
+        echo "SUCCESS: Mi Fitness reports 'file sent successfully'."
+        ;;
+    "")
+        echo "WARN: Mi Fitness returned without a visible final status."
+        echo "Check the band app list and run filtered logcat if needed."
+        exit 3
+        ;;
+    *)
+        echo "RESULT: $STATUS"
+        echo "The band may be disconnected or Mi Fitness may have rejected the file."
+        exit 4
+        ;;
+esac
